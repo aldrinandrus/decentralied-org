@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from "react"
 import { useWeb3 } from "@/components/providers/web3-provider"
+import { useDualStorage } from "@/hooks/use-dual-storage"
+import { PriorityMatchList } from "@/components/matching/priority-match-list"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -10,7 +12,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { BlockchainService } from "@/lib/blockchain"
 import { Search, Users, Heart, MapPin, Clock, Filter, AlertTriangle, CheckCircle, XCircle } from "lucide-react"
 import Link from "next/link"
 
@@ -125,63 +126,82 @@ const MOCK_RECIPIENTS = [
 
 export default function MatchingPage() {
   const { isConnected, signer, account } = useWeb3()
+  const { 
+    donors, 
+    recipients, 
+    matches, 
+    loadDonors, 
+    loadRecipients, 
+    loadMatches,
+    findCompatibleMatches,
+    loading 
+  } = useDualStorage()
   const [searchFilters, setSearchFilters] = useState({
     bloodType: "",
     organ: "",
     location: "",
     urgency: "",
   })
-  const [filteredDonors, setFilteredDonors] = useState<any[]>([])
-  const [filteredRecipients, setFilteredRecipients] = useState<any[]>([])
-  const [loading, setLoading] = useState(false)
+  const [searchResults, setSearchResults] = useState<{
+    donors: any[]
+    recipients: any[]
+    matches: any[]
+  }>({
+    donors: [],
+    recipients: [],
+    matches: []
+  })
   const [activeTab, setActiveTab] = useState("search")
   const [hasSearched, setHasSearched] = useState(false)
 
-  // Check if all required filters are filled
-  const areFiltersComplete = searchFilters.bloodType && searchFilters.organ
+  useEffect(() => {
+    if (isConnected) {
+      loadDonors()
+      loadRecipients()
+      loadMatches()
+    }
+  }, [isConnected, loadDonors, loadRecipients, loadMatches])
 
   const handleSearch = async () => {
-    if (!signer || !areFiltersComplete) return
+    if (!searchFilters.bloodType || !searchFilters.organ) {
+      return
+    }
 
-    setLoading(true)
     setHasSearched(true)
 
     try {
-      const blockchainService = new BlockchainService(signer)
-
-      // Filter donors based on blood type and organ compatibility
-      const compatibleDonors = MOCK_DONORS.filter((donor) => {
-        const bloodMatch = donor.bloodType === searchFilters.bloodType
+      // Filter donors
+      const filteredDonors = donors.filter((donor) => {
+        const bloodMatch = isBloodCompatible(donor.bloodType, searchFilters.bloodType)
         const organMatch = donor.organs.includes(searchFilters.organ)
         const locationMatch = !searchFilters.location || 
           donor.location.toLowerCase().includes(searchFilters.location.toLowerCase())
         
-        return bloodMatch && organMatch && locationMatch
+        return bloodMatch && organMatch && locationMatch && donor.isActive && donor.isVerified
       })
 
-      // Filter recipients based on blood type and organ compatibility
-      const compatibleRecipients = MOCK_RECIPIENTS.filter((recipient) => {
+      // Filter recipients
+      const filteredRecipients = recipients.filter((recipient) => {
         const bloodMatch = recipient.bloodType === searchFilters.bloodType
         const organMatch = recipient.organ === searchFilters.organ
         const locationMatch = !searchFilters.location || 
           recipient.location.toLowerCase().includes(searchFilters.location.toLowerCase())
         const urgencyMatch = !searchFilters.urgency || recipient.urgency === searchFilters.urgency
         
-        return bloodMatch && organMatch && locationMatch && urgencyMatch
+        return bloodMatch && organMatch && locationMatch && urgencyMatch && recipient.isActive
       })
 
-      setFilteredDonors(compatibleDonors)
-      setFilteredRecipients(compatibleRecipients)
+      // Find compatible matches
+      const compatibleMatches = await findCompatibleMatches(searchFilters.bloodType, searchFilters.organ)
 
-      // Also try to call blockchain service for real data
-      if (searchFilters.bloodType && searchFilters.organ) {
-        const results = await blockchainService.findMatches(searchFilters.bloodType, searchFilters.organ)
-        console.log("Blockchain search results:", results)
-      }
+      setSearchResults({
+        donors: filteredDonors,
+        recipients: filteredRecipients,
+        matches: compatibleMatches
+      })
+
     } catch (error) {
       console.error("Search error:", error)
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -192,8 +212,11 @@ export default function MatchingPage() {
       location: "",
       urgency: "",
     })
-    setFilteredDonors([])
-    setFilteredRecipients([])
+    setSearchResults({
+      donors: [],
+      recipients: [],
+      matches: []
+    })
     setHasSearched(false)
   }
 
@@ -384,7 +407,7 @@ export default function MatchingPage() {
                   </Button>
                   <Button 
                     onClick={handleSearch} 
-                    disabled={loading || !areFiltersComplete} 
+                    disabled={loading || !searchFilters.bloodType || !searchFilters.organ} 
                     className="bg-green-600 hover:bg-green-700"
                   >
                     {loading ? "Searching..." : "Search Matches"}
@@ -392,7 +415,7 @@ export default function MatchingPage() {
                   </Button>
                 </div>
 
-                {!areFiltersComplete && (
+                {(!searchFilters.bloodType || !searchFilters.organ) && (
                   <Alert className="mt-4 border-yellow-200 bg-yellow-50">
                     <AlertTriangle className="h-4 w-4 text-yellow-600" />
                     <AlertDescription className="text-yellow-800">
@@ -414,27 +437,68 @@ export default function MatchingPage() {
                       <span>Compatibility Results</span>
                     </CardTitle>
                     <p className="text-sm text-gray-600">
-                      Found {filteredDonors.length} compatible donors and {filteredRecipients.length} matching recipients
+                      Found {searchResults.donors.length} compatible donors, {searchResults.recipients.length} matching recipients, and {searchResults.matches.length} active matches
                     </p>
                   </CardHeader>
                   <CardContent>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div className="text-center p-4 bg-green-50 rounded-lg">
                         <Heart className="h-8 w-8 text-green-600 mx-auto mb-2" />
-                        <div className="text-2xl font-bold text-green-600">{filteredDonors.length}</div>
+                        <div className="text-2xl font-bold text-green-600">{searchResults.donors.length}</div>
                         <div className="text-sm text-gray-600">Compatible Donors</div>
                       </div>
                       <div className="text-center p-4 bg-blue-50 rounded-lg">
                         <Users className="h-8 w-8 text-blue-600 mx-auto mb-2" />
-                        <div className="text-2xl font-bold text-blue-600">{filteredRecipients.length}</div>
+                        <div className="text-2xl font-bold text-blue-600">{searchResults.recipients.length}</div>
                         <div className="text-sm text-gray-600">Matching Recipients</div>
+                      </div>
+                      <div className="text-center p-4 bg-purple-50 rounded-lg">
+                        <CheckCircle className="h-8 w-8 text-purple-600 mx-auto mb-2" />
+                        <div className="text-2xl font-bold text-purple-600">{searchResults.matches.length}</div>
+                        <div className="text-sm text-gray-600">Active Matches</div>
                       </div>
                     </div>
                   </CardContent>
                 </Card>
 
+                {/* Priority Matches */}
+                {hasSearched && searchResults.matches.length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center space-x-2">
+                        <CheckCircle className="h-5 w-5 text-purple-600" />
+                        <span>Priority Matches</span>
+                      </CardTitle>
+                      <p className="text-sm text-gray-600">
+                        Active matches for {searchFilters.organ} with {searchFilters.bloodType} blood type, sorted by priority
+                      </p>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-3">
+                        {searchResults.matches.slice(0, 5).map((match, index) => (
+                          <div key={match.id} className="border rounded-lg p-3 bg-purple-50">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center space-x-2">
+                                <Badge className="bg-purple-600">#{index + 1}</Badge>
+                                <span className="font-medium">{match.donorName} → {match.recipientName}</span>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <Badge variant="outline">Priority: {match.priority}</Badge>
+                                <Badge variant="outline">Score: {match.matchScore}%</Badge>
+                              </div>
+                            </div>
+                            <div className="text-sm text-gray-600">
+                              {match.organ} • {match.bloodType} • Status: {match.status}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
                 {/* Compatible Donors */}
-                {filteredDonors.length > 0 && (
+                {searchResults.donors.length > 0 && (
                   <Card>
                     <CardHeader>
                       <CardTitle className="flex items-center space-x-2">
@@ -447,7 +511,7 @@ export default function MatchingPage() {
                     </CardHeader>
                     <CardContent>
                       <div className="space-y-4">
-                        {filteredDonors.map((donor) => (
+                        {searchResults.donors.map((donor) => (
                           <div key={donor.id} className="border rounded-lg p-4 hover:shadow-md transition-shadow">
                             <div className="flex items-center justify-between mb-3">
                               <div className="flex items-center space-x-3">
@@ -455,7 +519,7 @@ export default function MatchingPage() {
                                 <h3 className="font-semibold">{donor.name}</h3>
                                 {donor.verified && (
                                   <Badge variant="outline" className="text-green-600 border-green-600">
-                                    Verified
+                                    Verified • Priority: {donor.priority}
                                   </Badge>
                                 )}
                               </div>
@@ -482,7 +546,7 @@ export default function MatchingPage() {
                               </div>
                               <div>
                                 <span className="text-gray-500">Compatibility:</span>
-                                <p className="font-medium text-green-600">{donor.compatibility}</p>
+                                <p className="font-medium text-green-600">{donor.matchScore || 'N/A'}%</p>
                               </div>
                             </div>
 
@@ -505,7 +569,7 @@ export default function MatchingPage() {
                 )}
 
                 {/* Matching Recipients */}
-                {filteredRecipients.length > 0 && (
+                {searchResults.recipients.length > 0 && (
                   <Card>
                     <CardHeader>
                       <CardTitle className="flex items-center space-x-2">
@@ -518,7 +582,7 @@ export default function MatchingPage() {
                     </CardHeader>
                     <CardContent>
                       <div className="space-y-4">
-                        {filteredRecipients.map((recipient) => (
+                        {searchResults.recipients.map((recipient) => (
                           <div key={recipient.id} className="border rounded-lg p-4 hover:shadow-md transition-shadow">
                             <div className="flex items-center justify-between mb-3">
                               <div className="flex items-center space-x-3">
@@ -526,7 +590,7 @@ export default function MatchingPage() {
                                 <h3 className="font-semibold">{recipient.name}</h3>
                                 {recipient.verified && (
                                   <Badge variant="outline" className="text-blue-600 border-blue-600">
-                                    Verified
+                                    Verified • Priority: {recipient.priority}
                                   </Badge>
                                 )}
                               </div>
@@ -584,7 +648,7 @@ export default function MatchingPage() {
                 )}
 
                 {/* No Results */}
-                {filteredDonors.length === 0 && filteredRecipients.length === 0 && (
+                {searchResults.donors.length === 0 && searchResults.recipients.length === 0 && searchResults.matches.length === 0 && hasSearched && (
                   <Card>
                     <CardHeader>
                       <CardTitle className="flex items-center space-x-2">
@@ -607,120 +671,11 @@ export default function MatchingPage() {
           </TabsContent>
 
           <TabsContent value="donors" className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center space-x-2">
-                  <Heart className="h-5 w-5 text-green-600" />
-                  <span>Available Donors</span>
-                </CardTitle>
-                <p className="text-sm text-gray-600">All verified donors in the system</p>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {MOCK_DONORS.map((donor) => (
-                    <div key={donor.id} className="border rounded-lg p-4">
-                      <div className="flex items-center justify-between mb-3">
-                        <h3 className="font-semibold">{donor.name}</h3>
-                        <div className="flex items-center space-x-2">
-                          <Badge variant="outline" className="text-green-600 border-green-600">
-                            Verified Donor
-                          </Badge>
-                          <Badge variant="secondary">{donor.compatibility} Match</Badge>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-4">
-                        <div>
-                          <span className="text-gray-500">Blood Type:</span>
-                          <p className="font-medium">{donor.bloodType}</p>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">Available Organs:</span>
-                          <p className="font-medium">{donor.organs.join(", ")}</p>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">Location:</span>
-                          <p className="font-medium">{donor.location}</p>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">Last Active:</span>
-                          <p className="font-medium">{donor.lastActive}</p>
-                        </div>
-                      </div>
-
-                      <div className="flex space-x-2">
-                        <Button size="sm" className="bg-green-600 hover:bg-green-700">
-                          Request Match
-                        </Button>
-                        <Button size="sm" variant="outline">
-                          View Details
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+            <PriorityMatchList userType="donor" maxItems={10} />
           </TabsContent>
 
           <TabsContent value="recipients" className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center space-x-2">
-                  <Users className="h-5 w-5 text-blue-600" />
-                  <span>Waiting Recipients</span>
-                </CardTitle>
-                <p className="text-sm text-gray-600">All patients waiting for organ transplants</p>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {MOCK_RECIPIENTS.map((recipient) => (
-                    <div key={recipient.id} className="border rounded-lg p-4">
-                      <div className="flex items-center justify-between mb-3">
-                        <h3 className="font-semibold">{recipient.name}</h3>
-                        <div className="flex items-center space-x-2">
-                          <Badge variant={recipient.urgencyLabel === "Emergency" || recipient.urgencyLabel === "Critical" ? "destructive" : "secondary"}>
-                            {recipient.urgencyLabel} Priority
-                          </Badge>
-                          <Badge variant="outline">Verified Patient</Badge>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-4">
-                        <div>
-                          <span className="text-gray-500">Blood Type:</span>
-                          <p className="font-medium">{recipient.bloodType}</p>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">Needed Organ:</span>
-                          <p className="font-medium">{recipient.organ}</p>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">Location:</span>
-                          <p className="font-medium">{recipient.location}</p>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">Wait Time:</span>
-                          <p className="font-medium flex items-center">
-                            <Clock className="h-3 w-3 mr-1" />
-                            {recipient.waitTime}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex space-x-2">
-                        <Button size="sm" className="bg-green-600 hover:bg-green-700">
-                          Offer Match
-                        </Button>
-                        <Button size="sm" variant="outline">
-                          View Medical Profile
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+            <PriorityMatchList userType="recipient" maxItems={10} />
           </TabsContent>
         </Tabs>
       </div>
