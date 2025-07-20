@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { useWeb3 } from "@/components/providers/web3-provider"
+import { useDualStorage } from "@/hooks/use-dual-storage"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -11,30 +12,27 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { useToast } from "@/hooks/use-toast"
-import { TransactionService } from "@/lib/transaction-service"
-import { TransactionFeedback } from "@/components/transaction/transaction-feedback"
-import { GasEstimator } from "@/components/transaction/gas-estimator"
 import { NetworkSwitcher } from "@/components/network/network-switcher"
 import { Heart, Upload, Shield, CheckCircle, Loader2, AlertTriangle } from "lucide-react"
 import Link from "next/link"
-import type { TransactionResult } from "@/lib/blockchain"
 
 const BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"]
 const ORGANS = ["Heart", "Liver", "Kidney", "Lung", "Pancreas", "Cornea", "Skin", "Bone"]
 
 export default function RegisterPage() {
   const { isConnected, signer, account, chainId } = useWeb3()
+  const { registerDonor, loading: storageLoading } = useDualStorage()
   const { toast } = useToast()
   const [loading, setLoading] = useState(false)
   const [step, setStep] = useState(1)
-  const [transactionResult, setTransactionResult] = useState<TransactionResult | null>(null)
-  const [showTransactionFeedback, setShowTransactionFeedback] = useState(false)
 
   const [formData, setFormData] = useState({
     fullName: "",
     dateOfBirth: "",
+    age: 0,
     bloodType: "",
     selectedOrgans: [] as string[],
+    location: "",
     medicalHistory: "",
     emergencyContact: "",
     emergencyPhone: "",
@@ -50,6 +48,14 @@ export default function RegisterPage() {
 
   const handleInputChange = (field: string, value: any) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
+    
+    // Auto-calculate age from date of birth
+    if (field === 'dateOfBirth' && value) {
+      const birthDate = new Date(value)
+      const today = new Date()
+      const age = today.getFullYear() - birthDate.getFullYear()
+      setFormData((prev) => ({ ...prev, age }))
+    }
   }
 
   const handleOrganToggle = (organ: string) => {
@@ -124,20 +130,10 @@ export default function RegisterPage() {
   }
 
   const handleSubmit = async () => {
-    if (!isConnected || !signer) {
+    if (!isConnected || !account) {
       toast({
         title: "Wallet Not Connected",
         description: "Please connect your MetaMask wallet first",
-        variant: "destructive",
-      })
-      return
-    }
-
-    // Check if on correct network
-    if (chainId !== 56 && chainId !== 97) {
-      toast({
-        title: "Wrong Network",
-        description: "Please switch to BNB Smart Chain before submitting the transaction",
         variant: "destructive",
       })
       return
@@ -150,76 +146,41 @@ export default function RegisterPage() {
     setLoading(true)
 
     try {
-      // Upload medical documents to IPFS
-      let medicalHash = ""
-      if (files.medicalReports) {
-        medicalHash = await uploadToIPFS(files.medicalReports)
-      }
-
-      // Create transaction service instance
-      const transactionService = new TransactionService(signer)
-
-      // Register donor on blockchain
-      const result = await transactionService.registerDonor({
+      // Register donor using dual storage
+      const donor = await registerDonor({
         name: formData.fullName,
         bloodType: formData.bloodType,
         organs: formData.selectedOrgans,
-        medicalHash: medicalHash,
+        age: formData.age,
+        location: formData.location,
+        emergencyContact: formData.emergencyContact,
+        emergencyPhone: formData.emergencyPhone,
+        medicalHistory: formData.medicalHistory,
+        isActive: true,
+        isVerified: false,
       })
 
-      setTransactionResult(result)
-      setShowTransactionFeedback(true)
-
-      if (result.status === "pending") {
+      if (donor) {
         toast({
-          title: "Transaction Submitted",
-          description: "Your registration is being processed on the blockchain",
+          title: "Registration Successful!",
+          description: "Your donor registration has been saved and you'll be notified of potential matches",
         })
 
-        // Monitor transaction
-        transactionService.onTransactionUpdate(result.hash, (updatedResult) => {
-          setTransactionResult(updatedResult)
-
-          if (updatedResult.status === "success") {
-            toast({
-              title: "Registration Successful!",
-              description: "Your donor registration has been confirmed on the blockchain",
-            })
-            // Redirect to home page after successful registration
-            setTimeout(() => {
-              window.location.href = "/"
-            }, 3000)
-          } else if (updatedResult.status === "failed") {
-            toast({
-              title: "Registration Failed",
-              description: updatedResult.error || "Transaction failed on the blockchain",
-              variant: "destructive",
-            })
-          }
-        })
+        // Redirect to dashboard after successful registration
+        setTimeout(() => {
+          window.location.href = "/dashboard"
+        }, 2000)
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Registration error:", error)
       toast({
         title: "Registration Failed",
-        description: "There was an error registering your information. Please try again.",
+        description: error.message || "There was an error registering your information. Please try again.",
         variant: "destructive",
       })
-      setTransactionResult({
-        hash: "",
-        status: "failed",
-        error: error instanceof Error ? error.message : "Unknown error occurred",
-      })
-      setShowTransactionFeedback(true)
     } finally {
       setLoading(false)
     }
-  }
-
-  const retryTransaction = () => {
-    setShowTransactionFeedback(false)
-    setTransactionResult(null)
-    handleSubmit()
   }
 
   if (!isConnected) {
@@ -339,6 +300,30 @@ export default function RegisterPage() {
                         ))}
                       </SelectContent>
                     </Select>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="age">Age</Label>
+                      <Input
+                        id="age"
+                        type="number"
+                        value={formData.age || ''}
+                        onChange={(e) => handleInputChange("age", parseInt(e.target.value) || 0)}
+                        placeholder="Enter your age"
+                        min="18"
+                        max="80"
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="location">Location</Label>
+                      <Input
+                        id="location"
+                        value={formData.location}
+                        onChange={(e) => handleInputChange("location", e.target.value)}
+                        placeholder="City, State"
+                      />
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -483,7 +468,16 @@ export default function RegisterPage() {
                     </div>
 
                     {/* Gas Estimator */}
-                    {isCorrectNetwork && <GasEstimator transactionType="registerDonor" parameters={formData} />}
+                    <Alert className="border-green-200 bg-green-50">
+                      <CheckCircle className="h-4 w-4 text-green-600" />
+                      <AlertDescription className="text-green-800">
+                        <strong>Dual Storage System:</strong>
+                        <br />• Your data will be stored locally for fast access
+                        <br />• Medical records will be securely stored on BNB Greenfield
+                        <br />• Automatic matching with compatible recipients
+                        <br />• Priority-based listing for optimal organ allocation
+                      </AlertDescription>
+                    </Alert>
 
                     <div className="space-y-4">
                       <div className="flex items-start space-x-3">
@@ -529,16 +523,19 @@ export default function RegisterPage() {
                     </Button>
                     <Button
                       onClick={handleSubmit}
-                      disabled={!formData.consentGiven || !formData.kycVerified || loading || !isCorrectNetwork}
+                      disabled={!formData.consentGiven || !formData.kycVerified || loading || storageLoading}
                       className="bg-green-600 hover:bg-green-700"
                     >
-                      {loading ? (
+                      {loading || storageLoading ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Processing Transaction...
+                          Registering Donor...
                         </>
                       ) : (
-                        "Complete Registration"
+                        <>
+                          <CheckCircle className="mr-2 h-4 w-4" />
+                          Complete Registration
+                        </>
                       )}
                     </Button>
                   </div>
@@ -548,14 +545,6 @@ export default function RegisterPage() {
           </Card>
         </div>
       </div>
-
-      {/* Transaction Feedback Modal */}
-      <TransactionFeedback
-        transaction={transactionResult}
-        isOpen={showTransactionFeedback}
-        onClose={() => setShowTransactionFeedback(false)}
-        onRetry={retryTransaction}
-      />
     </div>
   )
 }
