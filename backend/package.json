@@ -8,11 +8,18 @@
     "dev": "nodemon server.js || node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
+    "body-parser": "^1.20.2",
     "cors": "^2.8.5",
-    "body-parser": "^1.20.2"
+    "express": "^4.18.2"
   },
-  "keywords": ["organ-donation", "matching", "express"],
+  "keywords": [
+    "organ-donation",
+    "matching",
+    "express"
+  ],
   "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^9.2.0"
+  }
 }

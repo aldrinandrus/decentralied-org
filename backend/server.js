@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
@@ -282,10 +282,11 @@ app.get('/api/recipients', (req, res) => {
 initializeStorage();
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Backend server running on http://localhost:${PORT}`);
   console.log(`📁 Greenfield storage: ${greenfieldFile}`);
   console.log(`💾 Backup storage: ${backupFile}`);
-  console.log(`🌐 API available at http://localhost:${PORT}`);
+  console.log(`🌐 API endpoints available at http://localhost:${PORT}`);
+  console.log(`📋 Test the API: curl http://localhost:${PORT}/`);
 });
 
 module.exports = app;
