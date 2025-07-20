@@ -4,9 +4,11 @@
   "private": true,
   "scripts": {
     "build": "next build",
-    "dev": "next dev",
+    "dev": "next dev --port 3000",
     "lint": "next lint",
     "start": "next start",
+    "backend": "cd backend && npm start",
+    "dev:full": "concurrently \"npm run backend\" \"npm run dev\"",
     "setup": "node scripts/setup.js",
     "deploy": "npx hardhat run scripts/deploy.js --network bscTestnet",
     "deploy:mainnet": "npx hardhat run scripts/deploy.js --network bsc",
